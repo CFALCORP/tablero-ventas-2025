@@ -4,193 +4,164 @@ import plotly.express as px
 from streamlit_gsheets import GSheetsConnection
 
 # -----------------------------------------------------------------------------
-# 1. CONFIGURACIÓN DE LA PÁGINA
+# 1. CONFIGURACIÓN
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Tablero Comercial Pro", layout="wide", page_icon="📈")
-
-st.title("🚀 Tablero de Control de Ventas - Plan 2025")
+st.set_page_config(page_title="Tablero Comercial 2026", layout="wide", page_icon="🚀")
+st.title("🚀 Tablero de Control de Ventas - Plan 2026")
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 2. CONEXIÓN A GOOGLE SHEETS (CON CORRECCIÓN DE ERRORES)
+# 2. FUNCIONES DE LIMPIEZA (LA MAGIA)
+# -----------------------------------------------------------------------------
+def limpiar_moneda(valor):
+    """Convierte textos como '$1.500.000' a números reales 1500000"""
+    if isinstance(valor, str):
+        # Quitamos $, puntos y espacios
+        limpio = valor.replace('$', '').replace('.', '').replace(' ', '').strip()
+        # Si queda vacío, es 0
+        if not limpio: return 0
+        try:
+            return float(limpio)
+        except:
+            return 0
+    return valor
+
+# -----------------------------------------------------------------------------
+# 3. CONEXIÓN A GOOGLE SHEETS
 # -----------------------------------------------------------------------------
 try:
-    # Conectamos con la hoja
     conn = st.connection("gsheets", type=GSheetsConnection)
     
-    # Leemos las pestañas. ttl=0 significa que no guarda caché (actualiza al instante)
+    # Leemos las pestañas sin caché (ttl=0)
     df_registros = conn.read(worksheet="Registro_Semanal", ttl=0)
     df_metas = conn.read(worksheet="Metas", ttl=0)
     
-    # --- LIMPIEZA AUTOMÁTICA DE NOMBRES DE COLUMNA ---
-    # Esto elimina espacios invisibles al principio o final (ej: "Mes_Objetivo " -> "Mes_Objetivo")
+    # --- LIMPIEZA DE COLUMNAS ---
     df_registros.columns = df_registros.columns.str.strip()
     df_metas.columns = df_metas.columns.str.strip()
 
-    # --- VERIFICACIÓN DE SEGURIDAD ---
-    # Comprobamos que las columnas existan antes de seguir para evitar pantallas de error feas
-    if 'Mes_Objetivo' not in df_metas.columns:
-        st.error(f"⚠️ ERROR: No encuentro la columna 'Mes_Objetivo' en la hoja 'Metas'. Las columnas que veo son: {list(df_metas.columns)}")
-        st.info("Por favor, ve a tu Google Sheet, pestaña Metas, y revisa que en la fila 1 diga exactamente 'Mes_Objetivo' (sin espacios).")
-        st.stop() # Detiene la app aquí para no romper nada más
-        
-    if 'Mes_Objetivo' not in df_registros.columns:
-        st.error(f"⚠️ ERROR: No encuentro la columna 'Mes_Objetivo' en la hoja 'Registro_Semanal'.")
-        st.stop()
-
-    # --- FORMATEO DE DATOS ---
-    # Convertimos fechas y números para que Python los entienda
-    df_registros['Fecha_Reporte'] = pd.to_datetime(df_registros['Fecha_Reporte'], errors='coerce')
-    df_registros['Valor'] = pd.to_numeric(df_registros['Valor'], errors='coerce').fillna(0)
+    # --- LIMPIEZA DE DATOS (AQUI SOLUCIONAMOS TUS ERRORES) ---
     
-    # Eliminamos filas vacías si las hubiera
-    df_registros = df_registros.dropna(subset=['Fecha_Reporte'])
+    # 1. Limpiar Dinero (Quitar $)
+    df_registros['Valor'] = df_registros['Valor'].apply(limpiar_moneda)
+    df_metas['Meta_Total'] = df_metas['Meta_Total'].apply(limpiar_moneda)
+
+    # 2. Arreglar Fechas y Meses
+    # Convertimos la columna fecha a formato Fecha Real
+    df_registros['Fecha_Reporte'] = pd.to_datetime(df_registros['Fecha_Reporte'], dayfirst=True, errors='coerce')
+    
+    # TRUCO: Creamos una columna nueva "Mes_Normalizado" (Ej: 2026-01) 
+    # Usamos esto para unir las tablas, ignorando si escribiste "Ene" o "Fe" mal.
+    df_registros['Mes_Normalizado'] = df_registros['Fecha_Reporte'].dt.strftime('%Y-%m')
+    
+    # Hacemos lo mismo con la hoja de Metas
+    # Asumimos que la columna Mes_Objetivo en Metas es una fecha (1/1/2026)
+    df_metas['Mes_Objetivo'] = pd.to_datetime(df_metas['Mes_Objetivo'], dayfirst=True, errors='coerce')
+    df_metas['Mes_Normalizado'] = df_metas['Mes_Objetivo'].dt.strftime('%Y-%m')
+
+    # Eliminamos filas sin fecha válida
+    df_registros = df_registros.dropna(subset=['Mes_Normalizado'])
 
 except Exception as e:
-    st.error("⚠️ Ocurrió un error al conectar con Google Sheets.")
-    st.code(e) # Muestra el error técnico
+    st.error("⚠️ Error técnico leyendo el archivo.")
+    st.code(e)
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 3. FILTROS LATERALES
+# 4. FILTROS
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    st.header("Filtros de Análisis")
+    st.header("Filtros")
     
-    # Filtro de Mes Objetivo (Ordenado)
-    meses_disponibles = sorted(df_registros['Mes_Objetivo'].unique().tolist())
-    if not meses_disponibles:
-        st.warning("No hay datos de meses en la hoja.")
-        st.stop()
-        
-    mes_seleccionado = st.selectbox("Selecciona Mes a Analizar", meses_disponibles)
+    # Filtro de Mes (Usamos el normalizado para que sea perfecto)
+    meses_disponibles = sorted(df_registros['Mes_Normalizado'].unique().tolist())
+    mes_seleccionado = st.selectbox("Selecciona Mes (Año-Mes)", meses_disponibles)
     
-    # Filtro Vendedor
+    # Filtro Vendedor (Limpiamos espacios por si acaso)
+    df_registros['Vendedor'] = df_registros['Vendedor'].astype(str).str.strip()
     vendedores = ["Todos"] + sorted(df_registros['Vendedor'].unique().tolist())
-    vendedor_sel = st.selectbox("Filtrar por Vendedor", vendedores)
+    vendedor_sel = st.selectbox("Vendedor", vendedores)
 
 # -----------------------------------------------------------------------------
-# 4. PROCESAMIENTO DE DATOS (LÓGICA DE NEGOCIO)
+# 5. LÓGICA DE NEGOCIO
 # -----------------------------------------------------------------------------
 
-# A. Filtrar data por mes seleccionado
-df_mes = df_registros[df_registros['Mes_Objetivo'] == mes_seleccionado].copy()
+# A. Filtrar por mes
+df_mes = df_registros[df_registros['Mes_Normalizado'] == mes_seleccionado].copy()
 
 if df_mes.empty:
-    st.info(f"No hay registros para el mes {mes_seleccionado}.")
+    st.warning("No hay datos para este mes.")
     st.stop()
 
-# B. Obtener la "Foto Más Reciente" (Última semana reportada)
-#    Esto es crucial: para los KPI actuales, solo nos importa el último reporte disponible.
+# B. Foto más reciente (Última semana)
 fecha_maxima = df_mes['Fecha_Reporte'].max()
 df_actual = df_mes[df_mes['Fecha_Reporte'] == fecha_maxima].copy()
 
-# C. Aplicar filtro de vendedor si es necesario
+# C. Filtrar Vendedor
 if vendedor_sel != "Todos":
     df_actual = df_actual[df_actual['Vendedor'] == vendedor_sel]
-    df_evo = df_mes[df_mes['Vendedor'] == vendedor_sel] # Para la gráfica de evolución
-    
-    # Filtrar meta específica
-    meta_filtrada = df_metas[(df_metas['Mes_Objetivo'] == mes_seleccionado) & 
-                             (df_metas['Vendedor'] == vendedor_sel)]
-    if not meta_filtrada.empty:
-        meta_total = meta_filtrada['Meta_Total'].sum()
-    else:
-        meta_total = 0
+    # Buscamos la meta usando el mes normalizado y el nombre limpio
+    meta_filtrada = df_metas[
+        (df_metas['Mes_Normalizado'] == mes_seleccionado) & 
+        (df_metas['Vendedor'].astype(str).str.strip() == vendedor_sel)
+    ]
+    meta_total = meta_filtrada['Meta_Total'].sum()
 else:
-    df_evo = df_mes # Para la gráfica de evolución (todos)
-    # Meta total del mes (suma de todos los vendedores)
-    meta_filtrada = df_metas[df_metas['Mes_Objetivo'] == mes_seleccionado]
+    # Meta de todos para ese mes
+    meta_filtrada = df_metas[df_metas['Mes_Normalizado'] == mes_seleccionado]
     meta_total = meta_filtrada['Meta_Total'].sum()
 
-# D. Cálculos de Totales (KPIs)
+# D. CLASIFICACIÓN INTELIGENTE (Detecta "Fendiente" y errores)
+def clasificar_estado(texto):
+    texto = str(texto).lower()
+    if 'op' in texto and 'pend' not in texto and 'fend' not in texto: 
+        return 'Cerrado (OP)' # Si dice OP y no dice pendiente
+    elif 'pend' in texto or 'pte' in texto or 'fend' in texto: 
+        return 'Pendiente'    # Si dice Pendiente, PTE o Fendiente
+    elif 'pipe' in texto: 
+        return 'Pipeline'
+    else: 
+        return 'Otros'
+
+df_actual['Estado_Limpio'] = df_actual['Estado'].apply(clasificar_estado)
+
+# Sumas
 total_proyectado = df_actual['Valor'].sum()
+total_op = df_actual[df_actual['Estado_Limpio'] == 'Cerrado (OP)']['Valor'].sum()
+total_pendiente = df_actual[df_actual['Estado_Limpio'] == 'Pendiente']['Valor'].sum()
+total_pipeline = df_actual[df_actual['Estado_Limpio'] == 'Pipeline']['Valor'].sum()
 
-# Filtramos por Estado exacto (Asegúrate que en el Excel escriban esto tal cual)
-total_op = df_actual[df_actual['Estado'] == 'OP Emitida']['Valor'].sum()
-total_pendiente = df_actual[df_actual['Estado'] == 'Pendiente OP']['Valor'].sum()
-total_pipeline = df_actual[df_actual['Estado'] == 'Pipeline']['Valor'].sum()
-
-# Cálculo de cumplimiento
 cumplimiento = (total_proyectado / meta_total * 100) if meta_total > 0 else 0
 
 # -----------------------------------------------------------------------------
-# 5. VISUALIZACIÓN - KPIs SUPERIORES
+# 6. VISUALIZACIÓN
 # -----------------------------------------------------------------------------
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric("🎯 Meta del Mes", f"${meta_total:,.0f}")
-col2.metric("💰 Proyección Total", f"${total_proyectado:,.0f}", delta=f"{cumplimiento:.1f}% Cumplimiento")
-col3.metric("✅ Ya en OP (Cerrado)", f"${total_op:,.0f}")
-col4.metric("⏳ Pendiente + Pipeline", f"${total_pendiente + total_pipeline:,.0f}")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Objetivo", f"${meta_total:,.0f}")
+c2.metric("Proyección", f"${total_proyectado:,.0f}", delta=f"{cumplimiento:.1f}%")
+c3.metric("Ya Facturado (OP)", f"${total_op:,.0f}")
+c4.metric("En Gestión", f"${total_pendiente + total_pipeline:,.0f}")
 
 st.markdown("---")
 
-# -----------------------------------------------------------------------------
-# 6. GRÁFICOS PRINCIPALES
-# -----------------------------------------------------------------------------
+col_izq, col_der = st.columns([2, 1])
 
-c1, c2 = st.columns([1, 1])
+with col_izq:
+    st.subheader("📋 Detalle de Negocios")
+    st.dataframe(
+        df_actual[['Cliente', 'Vendedor', 'Estado', 'Valor']]
+        .sort_values('Valor', ascending=False)
+        .style.format({'Valor': '${:,.0f}'}),
+        use_container_width=True,
+        hide_index=True
+    )
 
-with c1:
-    st.subheader(f"🔍 Composición de la Venta (Semana {fecha_maxima.date()})")
-    
-    # Agrupamos por estado
-    df_estado = df_actual.groupby("Estado")['Valor'].sum().reset_index()
-    
-    if not df_estado.empty:
-        fig_bar = px.bar(df_estado, x='Estado', y='Valor', color='Estado', 
-                         text_auto='.2s', title="Desglose: OP vs Pendiente vs Pipeline",
-                         color_discrete_map={'OP Emitida':'#00CC96', 'Pendiente OP':'#EF553B', 'Pipeline':'#636EFA'})
-        st.plotly_chart(fig_bar, use_container_width=True)
-    else:
-        st.info("No hay datos para graficar composición.")
-
-with c2:
-    st.subheader("📈 Evolución Semanal de la Proyección")
-    
-    # Agrupamos por Fecha de Reporte para ver la historia
-    df_evo_agg = df_evo.groupby("Fecha_Reporte")['Valor'].sum().reset_index()
-    
-    if not df_evo_agg.empty:
-        fig_line = px.line(df_evo_agg, x='Fecha_Reporte', y='Valor', markers=True,
-                           title="Variación de la proyección semana a semana")
-        # Añadimos línea de meta
-        fig_line.add_hline(y=meta_total, line_dash="dot", annotation_text="Meta", annotation_position="top left", line_color="green")
-        st.plotly_chart(fig_line, use_container_width=True)
-    else:
-        st.info("Faltan datos históricos para mostrar la línea de tiempo.")
-
-# -----------------------------------------------------------------------------
-# 7. ANÁLISIS DETALLADO
-# -----------------------------------------------------------------------------
-
-c3, c4 = st.columns([2, 1])
-
-with c3:
-    st.subheader("📋 Detalle por Cliente (Status Actual)")
-    
-    # Mostramos tabla limpia
-    if not df_actual.empty:
-        df_tabla = df_actual[['Cliente', 'Vendedor', 'Estado', 'Fase_Detalle', 'Valor']].copy()
-        df_tabla = df_tabla.sort_values(by='Valor', ascending=False)
-        
-        st.dataframe(
-            df_tabla.style.format({'Valor': '${:,.0f}'}).background_gradient(subset=['Valor'], cmap="Blues"),
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.write("Sin datos para mostrar en tabla.")
-
-with c4:
-    st.subheader("⚠️ Fases de Estancamiento")
-    # Filtramos solo lo que está pendiente
-    df_pending = df_actual[df_actual['Estado'] == 'Pendiente OP']
-    
-    if not df_pending.empty:
-        fig_pie = px.pie(df_pending, names='Fase_Detalle', values='Valor', hole=0.4,
-                         title="¿Qué detiene los pedidos pendientes?")
-        st.plotly_chart(fig_pie, use_container_width=True)
-    else:
-        st.success("¡Excelente! No hay órdenes pendientes por generar.")
+with col_der:
+    st.subheader("Estado de la Cartera")
+    # Gráfica simple de torta
+    df_pie = df_actual.groupby('Estado_Limpio')['Valor'].sum().reset_index()
+    if not df_pie.empty:
+        fig = px.pie(df_pie, values='Valor', names='Estado_Limpio', 
+                     color='Estado_Limpio',
+                     color_discrete_map={'Cerrado (OP)':'#00cc96', 'Pendiente':'#ef553b', 'Pipeline':'#636efa'})
+        st.plotly_chart(fig, use_container_width=True)
